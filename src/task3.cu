@@ -6,6 +6,18 @@
 using namespace std;
 typedef unsigned char uchar;
 
+
+#define CUDA_TIMER_START(id) cudaEvent_t start##id, stop##id; \
+	    cudaEventCreate(&start##id); \
+	    cudaEventCreate(&stop##id); \
+	    cudaEventRecord(start##id, 0)
+
+#define CUDA_TIMER_STOP(id, elapsedTime) cudaEventRecord(stop##id, 0); \
+	    cudaEventSynchronize(stop##id); \
+	    cudaEventElapsedTime(&elapsedTime, start##id, stop##id); \
+	    cudaEventDestroy(start##id); \
+	    cudaEventDestroy(stop##id)
+
 template<typename T>
 void display_matrix(const T& v, int col_count, int row_count) {
 	for (int i = 0; i < col_count; ++i) {
@@ -19,7 +31,10 @@ void display_matrix(const T& v, int col_count, int row_count) {
 
 void rotate_array_cpu(uchar *source, uchar *target, int m, int n, int comp_count=1) {
 
-    clock_t startCPU = clock();
+	float elapsedTimeCPU = 0;
+
+    CUDA_TIMER_START(B);
+    //clock_t startCPU = clock();
 
 	for (int i = 0; i < m; ++i) {
 		for (int j = 0; j < n; ++j) {
@@ -31,8 +46,8 @@ void rotate_array_cpu(uchar *source, uchar *target, int m, int n, int comp_count
 		}
 	}
 
-    double elapsedTimeCPU = (double)(clock()-startCPU)/CLOCKS_PER_SEC;
-
+    //elapsedTimeCPU = (float)(clock()-startCPU)/CLOCKS_PER_SEC;
+    CUDA_TIMER_STOP(B, elapsedTimeCPU);
     std::cout << "CPU time: "<< elapsedTimeCPU << std::endl;
     return;
 }
@@ -56,16 +71,6 @@ void call_kernel(uchar *dev_src, uchar *dev_res, int m, int n, int comp_count) {
     rotate_gpu_kernel<<<numBlocks, threadsPerBlock >>>(dev_src, dev_res, m, n, comp_count);
 }
 
-#define CUDA_TIMER_START(id) cudaEvent_t start##id, stop##id; \
-	    cudaEventCreate(&start##id); \
-	    cudaEventCreate(&stop##id); \
-	    cudaEventRecord(start##id, 0)
-
-#define CUDA_TIMER_STOP(id, elapsedTime) cudaEventRecord(stop##id, 0); \
-	    cudaEventSynchronize(stop##id); \
-	    cudaEventElapsedTime(&elapsedTime, start##id, stop##id); \
-	    cudaEventDestroy(start##id); \
-	    cudaEventDestroy(stop##id)
 
 void rotate_array_gpu(uchar *h_src, uchar *h_res,  int m, int n, int comp_count) {
 
@@ -81,8 +86,11 @@ void rotate_array_gpu(uchar *h_src, uchar *h_res,  int m, int n, int comp_count)
     cudaMemcpy(dev_src, h_src, N, cudaMemcpyHostToDevice);
 
     CUDA_TIMER_START(A);
+    //clock_t startCPU = clock();
     call_kernel(dev_src, dev_res, m, n, comp_count);
+
     CUDA_TIMER_STOP(A, elapsedTime);
+    //elapsedTime = (float)(clock()-startCPU)/CLOCKS_PER_SEC;
 
     cudaMemcpy(h_res, dev_res, N, cudaMemcpyDeviceToHost);
     cudaFree(dev_src);
