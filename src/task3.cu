@@ -3,9 +3,6 @@
 #include <iostream>
 #include <vector>
 
-using namespace std;
-typedef unsigned char uchar;
-
 
 #define CUDA_TIMER_START(id) cudaEvent_t start##id, stop##id; \
 	    cudaEventCreate(&start##id); \
@@ -16,127 +13,180 @@ typedef unsigned char uchar;
 	    cudaEventSynchronize(stop##id); \
 	    cudaEventElapsedTime(&elapsedTime, start##id, stop##id); \
 	    cudaEventDestroy(start##id); \
-	    cudaEventDestroy(stop##id)
+	    cudaEventDestroy(stop##id); \
+	    elapsedTime /= 1000.0;
 
-template<typename T>
-void display_matrix(const T& v, int col_count, int row_count) {
-	for (int i = 0; i < col_count; ++i) {
-		for (int j = 0; j < row_count; ++j) {
-			cout.width(4);
-			cout << v[i*row_count+j];
-		}
-		cout << endl;
-	}
-}
+#define CHECK(value) {                                          \
+    cudaError_t _m_cudaStat = value;                                        \
+    if (_m_cudaStat != cudaSuccess) {                                       \
+        std::cerr<< "Error:" << cudaGetErrorString(_m_cudaStat) \
+            << " at line " << __LINE__ << " in file " << __FILE__ << "\n"; \
+        exit(1);                                                            \
+    } }
 
-void rotate_array_cpu(uchar *source, uchar *target, int m, int n, int comp_count=1) {
 
-	float elapsedTimeCPU = 0;
+#define COMP_CNT 3
 
-    CUDA_TIMER_START(B);
-    //clock_t startCPU = clock();
+void rotate_array_cpu(uchar *source, uchar *target, int m, int n) {
+
+	float elapsedTimeCPU = -1;
+    clock_t startCPU = clock();
 
 	for (int i = 0; i < m; ++i) {
-		for (int j = 0; j < n; ++j) {
-	      	int SIdx = (i*n + (n-1 - j)) * comp_count;
-	       	int DIdx = (j*m + i) * comp_count;
+		for (int j = n-1; j >=0; j--) {
+	      	int SIdx = (i*n + (n-1 - j)) * COMP_CNT;
+	       	int DIdx = (j*m + i) * COMP_CNT;
 
-	       	for (int c = 0; c < comp_count; ++c)
-	       		target[DIdx+c] = source[SIdx+c];
+	       	*((uchar3*)&target[DIdx]) = *((uchar3*)&source[SIdx]);
 		}
 	}
 
-    //elapsedTimeCPU = (float)(clock()-startCPU)/CLOCKS_PER_SEC;
-    CUDA_TIMER_STOP(B, elapsedTimeCPU);
+    elapsedTimeCPU = (float)(clock()-startCPU)/CLOCKS_PER_SEC;
+
     std::cout << "CPU time: "<< elapsedTimeCPU << std::endl;
     return;
 }
 
-__global__ void rotate_gpu_kernel(uchar *src, uchar *trg, int m, int n, int comp_count) {
-    int i = threadIdx.x + blockIdx.x*blockDim.x;
-    int j = threadIdx.y + blockIdx.y*blockDim.y;
+__global__ void rotate_gpu_kernel(uchar *src, uchar *trg, int m, int n) {
+	int tx = threadIdx.x,
+			ty = threadIdx.y;
+	int bx = blockIdx.x*blockDim.x,
+			by = blockIdx.y*blockDim.y;
+    int i = tx + bx;
+    int j = ty + by;
+
     if (i >= m || j >= n) return;
 
- 	int SIdx = (i*n + (n-1 - j)) * comp_count;
- 	int DIdx = (j*m + i) * comp_count;
+ 	int SIdx = (i*n + (n-1 - j)) * COMP_CNT;
+ 	int DIdx = (j*m + i) * COMP_CNT;
 
-   	for (int c = 0; c < comp_count; c++)
+   	for (int c = 0; c < COMP_CNT; c++)
    		trg[DIdx+c] = src[SIdx+c];
 }
 
-void call_kernel(uchar *dev_src, uchar *dev_res, int m, int n, int comp_count) {
-    dim3 threadsPerBlock(16, 16);
-    dim3 numBlocks((m+15) / 16, (n+15) / 16);
 
-    rotate_gpu_kernel<<<numBlocks, threadsPerBlock >>>(dev_src, dev_res, m, n, comp_count);
+#define TILE_W (128 * COMP_CNT)
+#define TILE_H 128
+
+__global__ void rotate_gpu_kernel_shared(uchar *src, uchar *trg, int m, int n) {
+	int tx = threadIdx.x,
+			ty = threadIdx.y;
+	int bx = blockIdx.x*blockDim.x,
+			by = blockIdx.y*blockDim.y;
+    int i = tx + bx;
+    int j = ty + by;
+
+    if (i >= m || j >= n) return;
+
+    __shared__ uchar block[TILE_W][TILE_H];
+
+    for (int i = 0; i < TILE_W / blockDim.x; ++i) {
+    	for (int j = 0; j < TILE_H / blockDim.y; ++j) {
+    		int gx = (tx+bx+i);
+    		int gy =(ty+by+j);
+    		if (gx >= n || gy >= m) {
+            	block[tx+i][ty+j] = 0;
+            	continue;
+    		}
+
+        	block[tx+i][ty+j] = src[gx*n+gy];
+		}
+	}
+    __syncthreads();
+
+
+ 	int SIdx = (i*n + (n-1 - j)) * COMP_CNT;
+ 	int DIdx = (j*m + i) * COMP_CNT;
+
+   	for (int c = 0; c < COMP_CNT; c++)
+   		trg[DIdx+c] = src[SIdx+c];
+}
+
+void call_kernel(uchar *dev_src, uchar *dev_res, int m, int n) {
+	const int bs = 16;
+    dim3 threadsPerBlock(bs, bs);
+    dim3 numBlocks((m+bs-1) / bs, (n+bs-1) / bs);
+
+    rotate_gpu_kernel_shared<<<numBlocks, threadsPerBlock >>>(dev_src, dev_res, m, n);
+    //rotate_gpu_kernel<<<numBlocks, threadsPerBlock >>>(dev_src, dev_res, m, n);
 }
 
 
-void rotate_array_gpu(uchar *h_src, uchar *h_res,  int m, int n, int comp_count) {
+void rotate_array_gpu(uchar *h_src, uchar *h_res,  int m, int n) {
 
-	int N = m*n*comp_count;
-    unsigned char *dev_src;
-    unsigned char *dev_res;
+	int N = m*n*COMP_CNT;
+    uchar *dev_src;
+    uchar *dev_res;
 
-    float elapsedTime;
 
     cudaMalloc(&dev_src, N);
     cudaMalloc(&dev_res, N);
 
-    cudaMemcpy(dev_src, h_src, N, cudaMemcpyHostToDevice);
+    CHECK(cudaMemcpy(dev_src, h_src, N, cudaMemcpyHostToDevice));
 
     CUDA_TIMER_START(A);
-    //clock_t startCPU = clock();
-    call_kernel(dev_src, dev_res, m, n, comp_count);
 
+    call_kernel(dev_src, dev_res, m, n);
+
+    float elapsedTime = -1;
     CUDA_TIMER_STOP(A, elapsedTime);
-    //elapsedTime = (float)(clock()-startCPU)/CLOCKS_PER_SEC;
 
-    cudaMemcpy(h_res, dev_res, N, cudaMemcpyDeviceToHost);
-    cudaFree(dev_src);
-    cudaFree(dev_res);
+    CHECK(cudaMemcpy(h_res, dev_res, N, cudaMemcpyDeviceToHost));
+    CHECK(cudaFree(dev_src));
+    CHECK(cudaFree(dev_res));
 
     std::cout << "CUDA time: "<< elapsedTime << std::endl;
     return;
 }
 
 template<typename F>
-void rotate_picture_test(F rotate, const char * in_file_name, const char * out_file_name) {
+void rotate_picture_test(F rotate_proc, const char * in_file_name, const char * out_file_name) {
 	cv::Mat image = cv::imread(in_file_name, CV_LOAD_IMAGE_COLOR);
 
+	if (!image.data) {
+		std::cout << "Error open image" << std::endl;
+		exit(1);
+	}
 	int n = image.cols,
 			m = image.rows;
+
 	cv::Mat rotated(n, m, CV_8UC3);
 
-	rotate(image.data, rotated.data, m, n, 3);
+	rotate_proc(image.data, rotated.data, m, n);
 
-    cv::imwrite(out_file_name,rotated);
+    cv::imwrite(out_file_name, rotated);
     return;
 }
 
+bool diff_img(const char * im_first, const char * im_second) {
+	cv::Mat ima = cv::imread(im_first, CV_LOAD_IMAGE_COLOR);
+	cv::Mat imb = cv::imread(im_second, CV_LOAD_IMAGE_COLOR);
 
-/*
-void rotate_vector_test() {
-	const int m = 3;
-	const int n = 4;
-	const int array_size = m*n;
-	vector<int> source(array_size);
-	for (int i = 0; i < m*n; ++i) { source[i] = i+1; }
+	int m, n;
+	if (((m = ima.rows) != imb.rows) ||
+		((n = ima.cols) != imb.cols)) {
+		return false;
+	}
 
-	vector<int> target(array_size);
-
-	rotate_array_cpu(source, target, m, n);
-
-	display_matrix(source, m, n);
-	cout << endl;
-	display_matrix(target, n, m);
+	for (int i = 0; i < m*n*3; ++i) {
+		if (ima.data[i] != imb.data[i]) {
+			return false;
+		}
+	}
+    return true;
 }
-*/
+
+#define ASSERT(cond, msg) if (!cond) {\
+	std::cerr << msg << std::endl;\
+	exit(1);\
+}
 
 int main() {
+//	rotate_picture_test(rotate_array_cpu, "pic.jpg", "_pic3.jpg");
 	rotate_picture_test(rotate_array_gpu, "pic.jpg", "_pic2.jpg");
-	rotate_picture_test(rotate_array_cpu, "pic.jpg", "_pic3.jpg");
+
+	bool im_eq = diff_img("_pic2.jpg", "_pic3.jpg");
+	ASSERT(im_eq, "Images are differ");
 
 	return 0;
 }
-
