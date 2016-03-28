@@ -1,3 +1,4 @@
 Debug
 *.jpg
 .settings
+.*project
