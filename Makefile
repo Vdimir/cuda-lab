@@ -1,8 +1,15 @@
 
 CC=nvcc
+OUT_DIR=build
+CFLAGS=
 
-task3: src/task3.cu
-	$(CC) -O3 src/task3.cu -lopencv_core -lopencv_highgui -o task3
+build: $(OUT_DIR)/task3
+
+$(OUT_DIR)/task3: src/task3.cu
+	$(CC) -O3 -lopencv_core -lopencv_highgui -o $(OUT_DIR)/task3 $(CFLAGS) src/task3.cu 
 	
-run: task3
-	optirun ./task3
+dir:
+	mkdir -p $(OUT_DIR)
+    
+run: $(OUT_DIR)/task3
+	optirun $(OUT_DIR)/task3
