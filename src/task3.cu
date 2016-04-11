@@ -15,16 +15,16 @@
 	    cudaEventDestroy(stop##id); \
 	    elapsedTime /= 1000.0;
 
-#define CHECK(value) {                                          \
-    cudaError_t _m_cudaStat = value;                                        \
-    if (_m_cudaStat != cudaSuccess) {                                       \
-        std::cerr<< "Error:" << cudaGetErrorString(_m_cudaStat) \
+#define CHECK(value) {													   \
+    cudaError_t _m_cudaStat = value;                                       \
+    if (_m_cudaStat != cudaSuccess) {                                      \
+        std::cerr<< "Error:" << cudaGetErrorString(_m_cudaStat) 		   \
             << " at line " << __LINE__ << " in file " << __FILE__ << "\n"; \
-        exit(1);                                                            \
+        exit(1);                                                           \
     } }
 
 
-#define COMP_CNT 3
+#define BYTE_PER_PIXEL 3
 
 float rotate_array_cpu(uchar *source, uchar *target, int m, int n) {
 
@@ -54,21 +54,22 @@ __global__ void rotate_gpu_kernel(const uchar *src, uchar *trg, int m, int n) {
     int j = ty + by;
 
     if (i >= m || j >= n) return;
-    int step = 3;
+    const int step = BYTE_PER_PIXEL;
  	int SIdx = (i*n + (n-1 - j)) * step;
  	int DIdx = (j*m + i) * step;
 
    	//((uchar3*)trg)[DIdx] = ((uchar3*)src)[SIdx];
-   	for (int c = 0; c < COMP_CNT; c++)
+   	for (int c = 0; c < BYTE_PER_PIXEL; c++)
    		trg[DIdx+c] = src[SIdx+c];
 }
 
-
+// threads per block
 #define BLOCK_H 16
 #define BLOCK_W 16
 
-#define TILE_H 16
-#define TILE_W 16
+// shared memory buffer size
+#define TILE_H BLOCK_H
+#define TILE_W BLOCK_W
 
 __global__ void rotate_gpu_kernel_shared(uchar *src, uchar *trg, int m, int n) {
 	int tx = threadIdx.x,
@@ -77,7 +78,7 @@ __global__ void rotate_gpu_kernel_shared(uchar *src, uchar *trg, int m, int n) {
 	int bx = blockIdx.x*blockDim.x,
 			by = blockIdx.y*blockDim.y;
 
-    __shared__ uchar3 block[TILE_H][TILE_W+4];
+    __shared__ uchar3 block[TILE_H][TILE_W];
 
 	int DIdx = (n-1-(tx + by) + (ty + bx)*n);
 
@@ -93,9 +94,7 @@ __global__ void rotate_gpu_kernel_shared(uchar *src, uchar *trg, int m, int n) {
 	if ((tx + bx) < m && (ty + by) < n) {
 		((uchar3*)trg)[SIdx] = block[ty][tx];
 	}
-
 }
-
 
 void call_kernel_shared(uchar *dev_src, uchar *dev_res, int m, int n) {
 	const int bsx = BLOCK_W, bsy = BLOCK_H;
@@ -116,13 +115,13 @@ void call_kernel_simple(uchar *dev_src, uchar *dev_res, int m, int n) {
 template<typename F>
 float rotate_array_gpu(F kernel_call, uchar *h_src, uchar *h_res,  int m, int n) {
 
-	int N = m*n*COMP_CNT;
+	int N = m*n*BYTE_PER_PIXEL;
     uchar *dev_src;
     uchar *dev_res;
 
 
-    cudaMalloc(&dev_src, N);
-    cudaMalloc(&dev_res, N);
+    CHECK(cudaMalloc(&dev_src, N));
+    CHECK(cudaMalloc(&dev_res, N));
 
     CHECK(cudaMemcpy(dev_src, h_src, N, cudaMemcpyHostToDevice));
 
@@ -193,7 +192,7 @@ bool diff_img(const char * im_first, const char * im_second) {
 		return false;
 	}
 
-	for (int i = 0; i < m*n*3; ++i) {
+	for (int i = 0; i < m*n*BYTE_PER_PIXEL; ++i) {
 		if (ima.data[i] != imb.data[i]) {
 			return false;
 		}
