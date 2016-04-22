@@ -105,13 +105,14 @@ void cl_initilize() {
 	char* source = "\n\
 			  __kernel void sum(__global const uchar *src, __global uchar *trg, int m, int n)\n\
 			  {\n\
-			\
 			    int  i = get_global_id(0);\n\
 			    int  j = get_global_id(1);\n\
- 	            int SIdx = (i*n + (n-1 - j)) * 3;\n\
-		    	int DIdx = (j*m + i) * 3;\n\
+ 	            int SIdx = (i*n + (n-1 - j)) ;\n\
+		    	int DIdx = (j*m + i) ;\n\
+				if (i > m) return;\
+				if (j > n) return;\
             	for (int c = 0; c < 3; c++)\n\
-   		            trg[DIdx+c] = src[SIdx+c];\n\
+   		            trg[DIdx*3+c] = src[SIdx*3+c];\n\
 			  }";
 	cl_program program = clCreateProgramWithSource(context, 1, (const char **) &source, NULL, &errcode);
 	checkError(clCreateProgramWithSource);
@@ -137,15 +138,26 @@ float rotate_array_gpu(uchar *h_src, uchar *h_res,  int m, int n) {
 	  checkErrorEx(errcode = clSetKernelArg(kernel, 3, sizeof(n), &n););
 
 
+	const int bsx = 16, bsy = 16;
 
-	  size_t globalSize = 12*1024;
+	  size_t globalSize[] = {8192, 4096};
+	  printf("%d\n", globalSize[0]);
+	  size_t locallSize[] = {bsx, bsy};
 	   // ставим задачу в очередь.
 	   // 3й аргумент - размерность пространства рабочих,
 	   // 6й аргумент - размер work-group
 	   // пследние 3 аргумента для событий
 	   clock_t t0 = clock();
 	   cl_event event;
-	   errcode = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, &globalSize, NULL, 0, NULL, &event);
+	   errcode = clEnqueueNDRangeKernel(queue,		// cl_command_queue command_queue,		
+	   								kernel,			// cl_kernel kernel,	
+	   								2,				// cl_uint work_dim,
+	   								NULL,			// const size_t *global_work_offset,	
+	   								globalSize,	// const size_t *global_work_size,			
+	   								locallSize,			// const size_t *local_work_size,	
+	   								0,				// cl_uint num_events_in_wait_list,
+	   								NULL,			// const cl_event *event_wait_list,	
+	   								&event);		// cl_event *event)		
 	   checkError(clEnqueueNDRangeKernel);
 	   checkErrorEx(errcode = clWaitForEvents(1, &event));
 	   clock_t t1 = clock();

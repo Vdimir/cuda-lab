@@ -1,5 +1,6 @@
 Debug
 *.jpg
+*.MOV
 .settings
 .*project
 build
